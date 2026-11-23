@@ -68,7 +68,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Visit http://localhost:3000. Docker stores account data and the generated workbook in the persistent `annotation-data` volume; the original study workbook is mounted read-only. Only Next.js port 3000 is exposed; Django is internal. To copy the live master workbook:
+Visit http://localhost:3106, or http://YOUR_SERVER_IP:3106 for remote access. For remote login, set `CSRF_TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3106` in `.env` before starting the containers. Docker stores account data and the generated workbook in the persistent `annotation-data` volume; the original study workbook is mounted read-only. Server port 3106 maps to Next.js container port 3000; Django is internal. To copy the live master workbook:
 
 ```bash
 docker compose cp backend:/app/data/annotation_verification.xlsx ./annotation_verification.xlsx
