@@ -1,3 +1,5 @@
+name: annotation2
+
 services:
   backend:
     build:
@@ -13,7 +15,6 @@ services:
       SOURCE_WORKBOOK: /input/study.xlsx
     volumes:
       - annotation-data:/app/data
-      - ./FINAL_DATA_RECODE_RD2_Validate_AI.xlsx:/input/study.xlsx:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]

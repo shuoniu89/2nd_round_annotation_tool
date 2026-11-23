@@ -68,11 +68,23 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Visit http://localhost:3106, or http://YOUR_SERVER_IP:3106 for remote access. For remote login, set `CSRF_TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3106` in `.env` before starting the containers. Docker stores account data and the generated workbook in the persistent `annotation-data` volume; the original study workbook is mounted read-only. Server port 3106 maps to Next.js container port 3000; Django is internal. To copy the live master workbook:
+Visit http://localhost:3106, or http://YOUR_SERVER_IP:3106 for remote access. For remote login, set `CSRF_TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3106` in `.env` before starting the containers. Docker stores account data and the generated workbook in the persistent `annotation-data` volume. The build copies the original study workbook into the backend image at `/input/study.xlsx`, owned by the backend user with read-only permissions. This avoids host-file permission failures when the app imports the workbook. Rebuild the backend image when changing the input workbook. Server port 3106 maps to Next.js container port 3000; Django is internal. To copy the live master workbook:
 
 ```bash
 docker compose cp backend:/app/data/annotation_verification.xlsx ./annotation_verification.xlsx
 ```
+
+The Compose project is explicitly named `annotation2`. When diagnosing an existing deployment before copying the updated YAML to the server, use `docker compose -p annotation2 ps -a` and `docker compose -p annotation2 logs --tail=120 backend frontend`. An empty result from plain `docker compose ps` can mean it selected a different project. Direct container logs are also available with `docker logs --tail=120 annotation2-backend-1`.
+
+If an earlier container fails with `PermissionError: '/input/study.xlsx'`, copy the updated `compose.yaml` and `backend/Dockerfile` to the server and run:
+
+```bash
+docker compose -p annotation2 up -d --build --force-recreate
+docker compose -p annotation2 ps -a
+curl -I http://127.0.0.1:3106
+```
+
+The updated Compose file removes the input bind mount, so it no longer hides the image's readable workbook. Recreating the containers keeps the existing `annotation-data` volume and its saved accounts and annotations.
 
 For internet hosting, place the app behind HTTPS; configure `DJANGO_ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, and `DJANGO_COOKIE_SECURE=1` for the actual domain. The provided `.env.example` uses insecure cookies solely to support a local HTTP Docker preview. `DJANGO_DEBUG=0` requires an explicitly configured secret. Add login rate limiting at the reverse proxy when exposing the app to the internet. Set `ALLOW_REGISTRATION=0` to require administrator-created rater accounts:
 
