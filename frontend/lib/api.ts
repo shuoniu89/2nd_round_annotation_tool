@@ -4,7 +4,7 @@ export type Stage = "not_started" | "annotate" | "verify" | "complete";
 export type RecordSummary = { id: number; external_id: string; source_row: number; title: string; subreddit: string; stage: Stage };
 export type Post = Omit<RecordSummary, "stage"> & { text: string; ai_codes: string[] | null };
 export type Annotation = {
-  selected_codes: string[]; no_codes: boolean; ai_reviews: Record<string, "accepted" | "rejected">;
+  selected_codes: string[]; no_codes: boolean; ai_reviews: Record<string, "accepted" | "rejected" | "agreed">;
   notes: string; stage: "annotate" | "verify" | "complete"; revision: number;
   updated_at: string | null; independent_confirmed_at: string | null; completed_at: string | null;
 };

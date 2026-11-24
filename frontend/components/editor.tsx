@@ -1,9 +1,10 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type Annotation, type Code, type Detail, type SaveResponse } from "@/lib/api";
+import { buildTaxonomy } from "@/lib/taxonomy";
+import { CodeTree } from "@/components/code-tree";
 
 type Job = { action: string; payload: object; requestId: string };
-const groups = ["RQ1", "RQ2", "RQ3"];
 
 export function AnnotationEditor({ detail, codes, initialWorkbookSynced, onBusy, onSaved, onNext, hasNext }: {
   detail: Detail; codes: Code[]; initialWorkbookSynced: boolean;
@@ -26,11 +27,39 @@ export function AnnotationEditor({ detail, codes, initialWorkbookSynced, onBusy,
   const stopped = useRef(false);
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
-  const locked = Boolean(annotation.independent_confirmed_at);
+  // Step 1 is editable while stage is "annotate", including after "Edit my codes" in step 2.
+  const locked = annotation.stage !== "annotate";
+  const revealedBefore = Boolean(annotation.independent_confirmed_at);
   const complete = annotation.stage === "complete";
   const selected = new Set(annotation.selected_codes);
-  const aiSelected = useMemo(() => codes.filter(c => aiCodes?.includes(c.key)), [codes, aiCodes]);
-  const reviewed = Object.keys(annotation.ai_reviews).length;
+  const taxonomy = useMemo(() => buildTaxonomy(codes), [codes]);
+  // Theme → subtheme order, matching the codebook table, for every list on this screen.
+  const ordered = useMemo(() => [...codes].sort((a, b) =>
+    (taxonomy.order.get(a.key) ?? 1e6 + a.column) - (taxonomy.order.get(b.key) ?? 1e6 + b.column)), [codes, taxonomy]);
+  // Only AI subthemes are verified; AI theme codes are not shown.
+  const aiSelected = useMemo(() => ordered.filter(c => c.kind === "detailed" && aiCodes?.includes(c.key)), [ordered, aiCodes]);
+  const themeCount = annotation.selected_codes.filter(key => codes.find(c => c.key === key)?.kind === "broad").length;
+  // Selected themes that offer subthemes but have none selected yet.
+  const missingSubthemes = ordered.filter(code => {
+    const children = taxonomy.childrenOf.get(code.key) ?? [];
+    return selected.has(code.key) && children.length > 0 && !children.some(key => selected.has(key));
+  });
+  function confirmIndependent() {
+    if (missingSubthemes.length && !window.confirm(
+      `These themes have no subtheme selected:\n\n${missingSubthemes.map(c => `• ${c.label}`).join("\n")}\n\n` +
+      "Select OK to confirm anyway, or Cancel to go back and choose subthemes.")) return;
+    setTransitioning(true);
+    enqueue("confirm_independent", {});
+  }
+  function editCodes() {
+    if (!window.confirm("Go back and edit your codes? Your AI decisions are kept, and you will return to verification after confirming again. Your original choices from before seeing the AI are kept on record.")) return;
+    setTransitioning(true);
+    enqueue("edit_codes", {}, { stage: "annotate", completed_at: null });
+  }
+  // AI codes the rater also chose in step 1 are agreed automatically; only the rest need a decision.
+  const agreedCodes = aiSelected.filter(c => selected.has(c.key));
+  const toReview = aiSelected.filter(c => !selected.has(c.key));
+  const reviewed = toReview.filter(c => ["accepted", "rejected"].includes(annotation.ai_reviews[c.key])).length;
 
   const processQueue = useCallback(async () => {
     if (processing.current || stopped.current) return;
@@ -78,8 +107,7 @@ export function AnnotationEditor({ detail, codes, initialWorkbookSynced, onBusy,
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
 
-  function choose(code: string) {
-    const next = selected.has(code) ? annotation.selected_codes.filter(c => c !== code) : [...annotation.selected_codes, code];
+  function setSelection(next: string[]) {
     enqueue("select_codes", { selected_codes: next, no_codes: false }, { selected_codes: next, no_codes: false });
   }
   function review(code: string, decision: "accepted" | "rejected") {
@@ -104,7 +132,6 @@ export function AnnotationEditor({ detail, codes, initialWorkbookSynced, onBusy,
       onSavedRef.current(latest.annotation.stage);
     } catch (e) { setSaveError((e as Error).message); }
   }
-  const filtered = codes.filter(code => `${code.header} ${code.key}`.toLowerCase().includes(search.toLowerCase()));
   const disabled = Boolean(saveError) || transitioning;
 
   return <>
@@ -135,47 +162,57 @@ export function AnnotationEditor({ detail, codes, initialWorkbookSynced, onBusy,
       <section className="annotation-form" aria-label={locked ? "AI verification" : "Independent coding"}>
         {!locked ? <>
           <h2>1. Select your codes</h2>
-          <p className="instructions">Select all applicable codes. Confirming locks your choices and reveals the AI annotations.</p>
-          <input type="search" aria-label="Search codes" placeholder="Search codes" value={search} onChange={e => setSearch(e.target.value)} />
+          {revealedBefore
+            ? <p className="warning-message">You are editing your codes after seeing the AI annotations. Your original choices from before the reveal are kept on record.</p>
+            : <p className="instructions">Select every applicable theme, then the subthemes that apply under it. Selecting a subtheme also selects its theme. Confirming reveals the AI annotations.</p>}
+          <div className="code-tools">
+            <input type="search" aria-label="Search codes" placeholder="Search themes and subthemes" value={search} onChange={e => setSearch(e.target.value)} />
+            <button type="button" disabled={disabled || annotation.selected_codes.length === 0}
+              onClick={() => { if (window.confirm("Clear all selected themes and subthemes for this post?")) setSelection([]); }}>Clear all</button>
+          </div>
           <div className="code-list">
-            {groups.map(group => {
-              const groupCodes = filtered.filter(code => code.group === group);
-              return groupCodes.length > 0 && <fieldset key={group}>
-                <legend>{group}</legend>
-                {groupCodes.map(code => <label key={code.key} className="code-choice">
-                  <input type="checkbox" aria-label={code.header} checked={selected.has(code.key)} disabled={disabled} onChange={() => choose(code.key)} />
-                  <span>{code.header}</span>
-                </label>)}
-              </fieldset>;
-            })}
-            {filtered.length === 0 && <p className="help-text">No codes match your search.</p>}
+            <CodeTree taxonomy={taxonomy} selected={selected} disabled={disabled} search={search} onChange={setSelection} />
           </div>
           <div className="form-actions">
             <label className="checkbox-label"><input type="checkbox" checked={annotation.no_codes} disabled={disabled} onChange={e => enqueue("select_codes", { selected_codes: [], no_codes: e.target.checked }, { selected_codes: [], no_codes: e.target.checked })} />No applicable codes for this post</label>
-            <p>{annotation.selected_codes.length} codes selected</p>
-            <button className="primary" disabled={disabled || pending > 0 || (!annotation.selected_codes.length && !annotation.no_codes)} onClick={() => { setTransitioning(true); enqueue("confirm_independent", {}); }}>Confirm codes & reveal AI</button>
+            <p>{themeCount} {themeCount === 1 ? "theme" : "themes"} · {annotation.selected_codes.length - themeCount} {annotation.selected_codes.length - themeCount === 1 ? "subtheme" : "subthemes"} selected</p>
+            {missingSubthemes.length > 0 && <div className="warning-message" role="alert">
+              <strong>Choose a subtheme for {missingSubthemes.length === 1 ? "this theme" : "these themes"}:</strong>
+              <ul>{missingSubthemes.map(c => <li key={c.key}>{c.label}</li>)}</ul>
+            </div>}
+            <button className="primary" disabled={disabled || pending > 0 || (!annotation.selected_codes.length && !annotation.no_codes)} onClick={confirmIndependent}>{revealedBefore ? "Confirm codes & return to verification" : "Confirm codes & reveal AI"}</button>
           </div>
         </> : <>
           <h2>{complete ? "Verification complete" : "2. Verify AI annotations"}</h2>
-          <p className="instructions">Accept or reject each code marked 1 by the AI. Your independent codes are locked.</p>
-          <details className="independent-codes">
-            <summary>Your independent codes ({annotation.selected_codes.length})</summary>
-            {annotation.no_codes ? <p>No applicable codes.</p> : <ul>{codes.filter(code => selected.has(code.key)).map(code => <li key={code.key}>{code.header}</li>)}</ul>}
-          </details>
-          <p className="review-count">{reviewed} / {aiSelected.length} AI codes reviewed</p>
+          <p className="instructions">Accept or reject each AI subtheme you did not choose yourself. AI subthemes that match your own choices are agreed automatically.</p>
+          <div className="your-codes-row">
+            <details className="independent-codes">
+              <summary>Your codes ({annotation.selected_codes.length})</summary>
+              {annotation.no_codes ? <p>No applicable codes.</p> : <ul>{ordered.filter(code => selected.has(code.key)).map(code => <li key={code.key} className={code.kind === "broad" ? "" : "sub-item"}>{taxonomy.shortLabel(code)}</li>)}</ul>}
+            </details>
+            <button type="button" disabled={disabled || pending > 0} onClick={editCodes}>Edit my codes</button>
+          </div>
+          <p className="review-count">{reviewed} / {toReview.length} AI subthemes reviewed{agreedCodes.length > 0 && ` · ${agreedCodes.length} agreed automatically`}</p>
           <div className="ai-code-list">
-            {aiSelected.map(code => <div key={code.key} className="ai-review-row">
-              <p>{code.header}</p>
-              <p className="help-text">Your independent selection: {selected.has(code.key) ? "Yes" : "No"}</p>
+            {agreedCodes.length > 0 && <details className="agreed-codes">
+              <summary>✓ Matches your codes, no review needed ({agreedCodes.length})</summary>
+              <ul>{agreedCodes.map(code => <li key={code.key}>
+                <span className="code-kind">{code.group}</span>{taxonomy.fullLabel(code)}
+              </li>)}</ul>
+            </details>}
+            {toReview.map(code => <div key={code.key} className="ai-review-row">
+              <p><span className="code-kind">{code.group}</span>{taxonomy.fullLabel(code)}</p>
+              <p className="help-text">You did not select this subtheme.</p>
               <div className="decision-buttons">
                 <button disabled={disabled} aria-label={`Accept ${code.label}`} aria-pressed={annotation.ai_reviews[code.key] === "accepted"} onClick={() => review(code.key, "accepted")}>Accept</button>
                 <button disabled={disabled} aria-label={`Reject ${code.label}`} aria-pressed={annotation.ai_reviews[code.key] === "rejected"} onClick={() => review(code.key, "rejected")}>Reject</button>
               </div>
             </div>)}
-            {aiSelected.length === 0 && <p>No AI-positive codes for this post.</p>}
+            {aiSelected.length === 0 && <p>The AI marked no subthemes for this post.</p>}
+            {aiSelected.length > 0 && toReview.length === 0 && <p>All AI subthemes match your own choices. Nothing to review.</p>}
           </div>
           <div className="form-actions">
-            {complete ? hasNext ? <button className="primary" disabled={pending > 0 || disabled} onClick={onNext}>Next unfinished post</button> : <p>All posts are complete.</p> : <button className="primary" disabled={disabled || pending > 0 || reviewed !== aiSelected.length} onClick={() => { setTransitioning(true); enqueue("complete", {}); }}>Complete verification</button>}
+            {complete ? hasNext ? <button className="primary" disabled={pending > 0 || disabled} onClick={onNext}>Next unfinished post</button> : <p>All posts are complete.</p> : <button className="primary" disabled={disabled || pending > 0 || reviewed !== toReview.length} onClick={() => { setTransitioning(true); enqueue("complete", {}); }}>Complete verification</button>}
           </div>
         </>}
       </section>

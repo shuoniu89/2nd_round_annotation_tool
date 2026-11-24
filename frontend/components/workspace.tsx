@@ -51,6 +51,19 @@ export function Workspace({ user, onLogout }: { user: User; onLogout: () => void
     finally { setLogoutBusy(false); }
   }
 
+  async function resetAnnotations() {
+    const typed = window.prompt("This permanently deletes ALL of your annotations, AI decisions and notes on every post. Other raters are not affected. This cannot be undone.\n\nType RESET to confirm.");
+    if (typed === null) return;
+    if (typed.trim() !== "RESET") { window.alert("Nothing was deleted. Type RESET exactly to confirm."); return; }
+    setBusy(true);
+    try {
+      await api("/annotations/reset/", { confirm: "RESET" });
+      setActiveId(null);
+      setReload(r => r + 1);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
   function updateStage(id: number, stage: RecordSummary["stage"]) {
     setProject(p => p ? { ...p, records: p.records.map(r => r.id === id ? { ...r, stage } : r) } : p);
   }
@@ -61,6 +74,7 @@ export function Workspace({ user, onLogout }: { user: User; onLogout: () => void
       <div className="account-controls">
         <span>{user.email}</span>
         <a href="/api/export.xlsx" aria-disabled={busy} onClick={e => { if (busy) e.preventDefault(); }}>Download my annotations</a>
+        <button className="danger" disabled={busy || logoutBusy} onClick={resetAnnotations}>Reset my annotations</button>
         <button disabled={busy || logoutBusy} onClick={logout}>{logoutBusy ? "Signing out…" : "Sign out"}</button>
       </div>
     </header>
@@ -78,7 +92,7 @@ export function Workspace({ user, onLogout }: { user: User; onLogout: () => void
       <p>{error}</p>
       <button onClick={() => { setError(""); setReload(r => r + 1); }}>Retry connection</button>
     </div> : loading || !project || !detail ? <p className="loading-message">Loading post…</p> : <AnnotationEditor
-      key={detail.record.id}
+      key={`${detail.record.id}-${reload}`}
       detail={detail}
       codes={project.codes}
       initialWorkbookSynced={project.dataset.workbook_synced}

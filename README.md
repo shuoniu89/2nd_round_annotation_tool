@@ -20,16 +20,22 @@ The development script runs Django on `127.0.0.1:8000` and Next.js on `127.0.0.1
 ## Rater workflow
 
 1. Sign in. Progress and annotations belong to that account.
-2. Read the post’s title and complete text. Choose any applicable codes from all 44 E–AV headers. The plain checkbox list shows the original spreadsheet headers, grouped by research question, with a code search field. An explicit **No applicable codes** choice handles posts with no matching code.
-3. Confirm the independent choices. They become locked, and Django then reveals the codes marked `1` by the AI. The API and personal downloads withhold AI labels for posts whose independent choices have not been confirmed.
-4. Accept or reject **each AI-positive code**. Your independent choices remain available for comparison. AI-zero codes do not need a verification decision.
-5. Complete verification and continue to the next unfinished post. A rater can revisit and change AI decisions; doing so reopens the post until it is completed again. Independent choices stay locked after exposure to AI labels.
+2. Read the post’s title and complete text. Codes are organized as research question → theme → subtheme. Check each applicable theme, then the subthemes that apply under it; checking a subtheme also checks its theme. **All / None**, **Show subthemes**, search, and **Clear all** speed up selection. A theme left without any subtheme is flagged before confirming. An explicit **No applicable codes** choice handles posts with no matching code.
+3. Confirm the choices. Django records them as the blind (pre-AI) selection and then reveals the codes marked `1` by the AI. The API and personal downloads withhold AI labels for posts that have not been confirmed.
+4. Verify **AI-positive subthemes** only; AI theme codes are not verified. Subthemes the rater also chose are agreed automatically, and the rest need Accept or Reject.
+5. Complete verification and continue to the next unfinished post. **Edit my codes** reopens step 1 after the reveal; the blind selection is kept unchanged, and earlier AI decisions carry over.
 
 Use the post dropdown or Previous/Next buttons to move between posts. The screen shows completion counts and the current save status.
 
 Code choices, the no-codes choice, confirmation, AI decisions, completion, and notes all save automatically. The interface shows saving / saved / failure states and prevents navigation while a save is pending. In-flight requests are serialized, and stale revisions cannot silently overwrite another tab’s work. Keep the page open if a save fails and use **Retry saving**. Research notes save on each input change.
 
-Each account gets all study posts. This app does not assign different subsets to raters.
+Accounts see every post unless posts are assigned. An administrator creates a rater with an assigned range (and optionally writes those rows to a CSV):
+
+```bash
+docker compose -p annotation2 exec -T backend python manage.py create_rater --email rater@example.edu --password '...' --name Rater --posts 1-30
+```
+
+**Reset my annotations** (header) deletes only the signed-in rater’s annotations, after typing RESET.
 
 ## Where the data lives
 
@@ -40,13 +46,14 @@ Each account gets all study posts. This app does not assign different subsets to
 | `backend/data/db.sqlite3` | Accounts, annotation state, revisions, and action history |
 | `backend/data/annotation_verification.xlsx` | Automatically updated workbook containing every rater’s work |
 
-The server workbook keeps the source worksheet and its original AI values. It adds:
+The workbook has four tabs, one row per rater and post. Code columns use the original E–AV headers in the same order.
 
-- **Rater annotations**: one row per account/post that has been edited. Includes account ID, email, source ID/row, stage, revision, timestamps, notes, 44 `HUMAN:<original header>` binary columns, and 44 `AI_REVIEW:<original header>` columns. Human columns mean selected/not selected; the stage and confirmation timestamp distinguish drafts from confirmed choices. AI review cells contain `accepted`, `rejected`, or blank for unreviewed/nonpositive codes.
-- **Action log**: timestamped snapshots for every saved annotation action, identifying the rater by email.
-- **Codebook**: the exact original header, spreadsheet column, research question, and code type.
+1. **Final annotations**: the rater’s current selection (`1`/`0`), with stage, `edited_after_ai`, timestamps, and notes.
+2. **AI corrections**: per code, `agreed` (AI 1, rater chose it), `missed` (rater chose it, AI 0), `rejected` (AI 1, rater rejected it), `accepted` (AI 1, rater had not chosen it but accepted it), or blank.
+3. **Before AI reveal**: the blind selection as first confirmed (`1`/`0`).
+4. **Interaction log**: timestamped JSON snapshots of every saved action.
 
-**Download my annotations** produces the same structure filtered to the signed-in rater. Other raters’ annotations and action logs are excluded. Source AI cells for that rater’s unconfirmed posts are blanked in this personal download.
+Tabs 2 and 3 list only confirmed posts. **Download my annotations** produces the same tabs filtered to the signed-in rater.
 
 SQLite is the durable account store. The server regenerates the XLSX after each annotation action. A shared file lock serializes annotation writes across worker processes; the XLSX is written to a temporary file and replaced atomically. If a workbook write fails, the database retains the action, the UI distinguishes that state, and a sync retry can rebuild the workbook.
 

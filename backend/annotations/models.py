@@ -41,6 +41,10 @@ class Annotation(models.Model):
     selected_codes = models.JSONField(default=list)
     no_codes = models.BooleanField(default=False)
     ai_reviews = models.JSONField(default=dict)
+    # The rater's first confirmed choices, made before seeing any AI label. Later edits
+    # (allowed after the reveal) change selected_codes but never this blind record.
+    blind_selected_codes = models.JSONField(null=True, blank=True)
+    blind_no_codes = models.BooleanField(null=True, blank=True)
     notes = models.TextField(blank=True)
     stage = models.CharField(max_length=12, default="annotate")
     revision = models.PositiveIntegerField(default=0)
@@ -50,6 +54,15 @@ class Annotation(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["user", "record"], name="one_annotation_per_rater_record")]
+
+
+class Assignment(models.Model):
+    """Posts assigned to a rater. A rater with no assignments sees every post."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    record = models.ForeignKey(Record, on_delete=models.CASCADE)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["user", "record"], name="one_assignment_per_rater_record")]
 
 
 class ActionLog(models.Model):

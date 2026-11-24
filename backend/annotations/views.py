@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
-from .models import ActionLog, Annotation, Code, Dataset, Record
+from .models import ActionLog, Annotation, Assignment, Code, Dataset, Record
 from .workbooks import annotation_lock, export_workbook, personal_workbook
 
 
@@ -41,6 +41,31 @@ def account_required(view):
 
 def user_json(user):
     return {"id": user.pk, "email": user.email, "is_staff": user.is_staff}
+
+
+def visible_records(user):
+    """A rater with assigned posts sees only those; a rater without assignments sees every post."""
+    assigned = Assignment.objects.filter(user=user)
+    return Record.objects.filter(pk__in=assigned.values("record")) if assigned.exists() else Record.objects.all()
+
+
+def reviewable_ai_codes(record):
+    """Only AI-positive subthemes (detailed codes) are verified; AI theme codes are not."""
+    detailed = set(Code.objects.filter(kind="detailed").values_list("key", flat=True))
+    return [code for code in record.ai_codes if code in detailed]
+
+
+def agreed_reviews(annotation, record):
+    """AI-positive subthemes the rater also chose need no review; they are recorded as "agreed"."""
+    return {code: "agreed" for code in reviewable_ai_codes(record) if code in annotation.selected_codes}
+
+
+def merged_reviews(annotation, record, reviews):
+    """Rater decisions for unmatched AI subthemes plus automatic agreement for matched ones."""
+    agreed = agreed_reviews(annotation, record)
+    reviewable = set(reviewable_ai_codes(record))
+    manual = {k: v for k, v in reviews.items() if k in reviewable and k not in agreed and v in ("accepted", "rejected")}
+    return {**manual, **agreed}
 
 
 def annotation_json(annotation):
@@ -128,7 +153,7 @@ def project(request):
         return error("No dataset imported. Run python manage.py import_workbook on the server.", 503)
     annotations = {a.record_id: a for a in Annotation.objects.filter(user=request.user)}
     records = []
-    for record in Record.objects.all():
+    for record in visible_records(request.user):
         annotation = annotations.get(record.pk)
         records.append({"id": record.pk, "external_id": record.external_id, "source_row": record.source_row,
                         "title": record.title, "subreddit": record.subreddit,
@@ -145,7 +170,7 @@ def project(request):
 @require_GET
 @account_required
 def record_detail(request, record_id):
-    record = Record.objects.filter(pk=record_id).first()
+    record = visible_records(request.user).filter(pk=record_id).first()
     if not record:
         return error("Post not found.", 404)
     annotation = Annotation.objects.filter(record=record, user=request.user).first()
@@ -166,7 +191,7 @@ def save_annotation(request, record_id):
     except ValueError as exception:
         return error(str(exception))
     action = data.get("action")
-    if action not in {"select_codes", "confirm_independent", "review_ai", "save_notes", "complete"}:
+    if action not in {"select_codes", "confirm_independent", "edit_codes", "review_ai", "save_notes", "complete"}:
         return error("Unknown annotation action.")
     if type(data.get("revision")) is not int or data["revision"] < 0:
         return error("A valid annotation revision is required.")
@@ -176,7 +201,7 @@ def save_annotation(request, record_id):
             request_id = uuid.UUID(str(data["request_id"]))
         except (ValueError, AttributeError):
             return error("A valid request ID is required.")
-    record = Record.objects.filter(pk=record_id).first()
+    record = visible_records(request.user).filter(pk=record_id).first()
     if record is None:
         return error("Post not found.", 404)
     with annotation_lock():
@@ -199,8 +224,8 @@ def save_annotation(request, record_id):
             if annotation is None:
                 annotation = Annotation(user=request.user, record=record)
             if action == "select_codes":
-                if annotation.independent_confirmed_at:
-                    return error("Independent codes are locked after the AI annotations are revealed.")
+                if annotation.stage != "annotate":
+                    return error("Choose “Edit my codes” before changing your codes.")
                 selected = data.get("selected_codes")
                 no_codes = data.get("no_codes", False)
                 if not isinstance(selected, list) or any(not isinstance(code, str) for code in selected):
@@ -213,21 +238,36 @@ def save_annotation(request, record_id):
                 annotation.selected_codes = [code for code in valid_codes if code in selected]
                 annotation.no_codes = no_codes
             elif action == "confirm_independent":
-                if annotation.independent_confirmed_at:
-                    return error("Your independent annotation is already confirmed.")
+                if annotation.stage != "annotate":
+                    return error("Your codes are already confirmed.")
                 if not annotation.selected_codes and not annotation.no_codes:
                     return error("Select at least one code, or explicitly mark no applicable codes.")
-                annotation.independent_confirmed_at = timezone.now()
-                annotation.stage = "verify"
-            elif action == "review_ai":
                 if not annotation.independent_confirmed_at:
-                    return error("Confirm your independent annotation before reviewing AI codes.")
+                    # First confirmation: freeze the blind choices before AI labels are revealed.
+                    annotation.independent_confirmed_at = timezone.now()
+                    annotation.blind_selected_codes = list(annotation.selected_codes)
+                    annotation.blind_no_codes = annotation.no_codes
+                # After an edit, earlier decisions for still-unmatched codes are kept.
+                annotation.ai_reviews = merged_reviews(annotation, record, annotation.ai_reviews)
+                annotation.stage = "verify"
+            elif action == "edit_codes":
+                if not annotation.independent_confirmed_at or annotation.stage == "annotate":
+                    return error("Your codes are already open for editing.")
+                annotation.stage = "annotate"
+                annotation.completed_at = None
+            elif action == "review_ai":
+                if not annotation.independent_confirmed_at or annotation.stage == "annotate":
+                    return error("Confirm your codes before reviewing AI codes.")
                 reviews = data.get("ai_reviews")
                 if not isinstance(reviews, dict) or set(reviews) - set(record.ai_codes):
                     return error("Review only the AI-positive codes for this post.")
-                if any(value not in ("accepted", "rejected") for value in reviews.values()):
+                agreed = agreed_reviews(annotation, record)
+                reviewable = set(reviewable_ai_codes(record))
+                if any(value not in ("accepted", "rejected") for code, value in reviews.items()
+                       if code in reviewable and code not in agreed):
                     return error("Each AI code must be accepted or rejected.")
-                annotation.ai_reviews = reviews
+                # Matched subthemes stay "agreed"; theme codes are not verified.
+                annotation.ai_reviews = merged_reviews(annotation, record, reviews)
                 annotation.stage = "verify"
                 annotation.completed_at = None
             elif action == "save_notes":
@@ -235,10 +275,12 @@ def save_annotation(request, record_id):
                     return error("Notes must be text with at most 10,000 characters.")
                 annotation.notes = data["notes"]
             elif action == "complete":
-                if not annotation.independent_confirmed_at:
-                    return error("Finish your independent annotation first.")
-                if set(annotation.ai_reviews) != set(record.ai_codes):
-                    return error("Accept or reject every AI-positive code before completing this post.")
+                if not annotation.independent_confirmed_at or annotation.stage == "annotate":
+                    return error("Confirm your codes first.")
+                # Also tidies posts confirmed before automatic agreement or subtheme-only review existed.
+                annotation.ai_reviews = merged_reviews(annotation, record, annotation.ai_reviews)
+                if set(annotation.ai_reviews) != set(reviewable_ai_codes(record)):
+                    return error("Accept or reject every AI-positive subtheme before completing this post.")
                 annotation.stage = "complete"
                 annotation.completed_at = timezone.now()
             annotation.revision += 1
@@ -250,6 +292,24 @@ def save_annotation(request, record_id):
         synced = export_workbook()
         return JsonResponse({"annotation": snapshot, "workbook_synced": synced,
                              "ai_codes": record.ai_codes if annotation.independent_confirmed_at else None})
+
+
+@require_POST
+@account_required
+def reset_annotations(request):
+    """Permanently delete the signed-in rater's own annotations, notes and action log."""
+    try:
+        data = json_body(request)
+    except ValueError as exception:
+        return error(str(exception))
+    if data.get("confirm") != "RESET":
+        return error("Type RESET to confirm deleting your annotations.")
+    with annotation_lock():
+        with transaction.atomic():
+            deleted, _ = Annotation.objects.filter(user=request.user).delete()  # cascades to ActionLog
+            Dataset.objects.update(workbook_dirty=True)
+        synced = export_workbook()
+    return JsonResponse({"ok": True, "workbook_synced": synced})
 
 
 @require_POST

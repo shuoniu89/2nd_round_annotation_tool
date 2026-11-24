@@ -9,11 +9,10 @@ services:
       DJANGO_DEBUG: "0"
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
-      # Must list the exact address in the browser bar, e.g. http://YOUR_SERVER_IP:3106 (set it in .env).
+      # Must list the exact origin in the browser bar, e.g. https://annotation.niulab.online (set it in .env).
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:3106,http://127.0.0.1:3106}
-      # The app is served over plain HTTP on port 3106, where browsers discard Secure cookies
-      # (including csrftoken). Set DJANGO_COOKIE_SECURE=1 in .env only when serving over HTTPS.
-      DJANGO_COOKIE_SECURE: ${DJANGO_COOKIE_SECURE:-0}
+      # Keep 1 behind HTTPS. Set 0 in .env only for plain-HTTP access, where browsers discard Secure cookies.
+      DJANGO_COOKIE_SECURE: ${DJANGO_COOKIE_SECURE:-1}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-1}
       SOURCE_WORKBOOK: /input/study.xlsx
     volumes:

@@ -10,6 +10,7 @@ urlpatterns = [
     re_path(r"^api/records/(?P<record_id>\d+)/?$", views.record_detail),
     re_path(r"^api/records/(?P<record_id>\d+)/annotation/?$", views.save_annotation),
     re_path(r"^api/workbook/sync/?$", views.sync_workbook),
+    re_path(r"^api/annotations/reset/?$", views.reset_annotations),
     re_path(r"^api/export\.xlsx$", views.download_workbook),
     re_path(r"^api/health/?$", views.health),
 ]
